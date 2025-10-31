@@ -57,9 +57,9 @@ class MetricsMonitor:
             if not metrics_list:
                 return None
             
-            # Return latest metrics
+            # Return latest metrics (last dict in list)
             return metrics_list[-1]
-        except (json.JSONDecodeError, IOError) as e:
+        except (json.JSONDecodeError, IOError, IndexError) as e:
             print(f"Error reading metrics: {e}")
             return None
     
@@ -100,10 +100,17 @@ class MetricsMonitor:
         vram = metrics.get('vram_usage', 0.0)
         tokens_per_sec = metrics.get('tokens_per_second', 0.0)
         
-        # Calculate trends
-        loss_arrow = self.get_trend_arrow(loss, previous.get('loss', loss)) if previous else ""
-        ppl_arrow = self.get_trend_arrow(perplexity, previous.get('perplexity', perplexity)) if previous else ""
-        tokens_arrow = self.get_trend_arrow(tokens_per_sec, previous.get('tokens_per_second', tokens_per_sec)) if previous else ""
+        # Calculate trends (only if previous metrics exist)
+        loss_arrow = ""
+        ppl_arrow = ""
+        tokens_arrow = ""
+        if previous:
+            if 'loss' in previous:
+                loss_arrow = self.get_trend_arrow(loss, previous.get('loss', loss))
+            if 'perplexity' in previous:
+                ppl_arrow = self.get_trend_arrow(perplexity, previous.get('perplexity', perplexity))
+            if 'tokens_per_second' in previous:
+                tokens_arrow = self.get_trend_arrow(tokens_per_sec, previous.get('tokens_per_second', tokens_per_sec))
         
         # Format output
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

@@ -123,6 +123,11 @@ def plot_training_curves(
         print("No metrics to plot")
         return
     
+    # Check if steps exist
+    if not any('step' in m for m in metrics):
+        print("No step data found in metrics")
+        return
+    
     # Extract steps and metrics
     steps = [m.get('step', i) for i, m in enumerate(metrics)]
     
@@ -169,6 +174,11 @@ def plot_comprehensive_metrics(
     metrics = load_metrics(metrics_file)
     if not metrics:
         print("No metrics to plot")
+        return
+    
+    # Check if steps exist
+    if not any('step' in m for m in metrics):
+        print("No step data found in metrics")
         return
     
     # Extract data

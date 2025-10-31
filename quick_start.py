@@ -50,6 +50,14 @@ def main():
     except Exception as e:
         print(f"Warning: Could not check CUDA: {e}")
     
+    # Optional wandb login (skip if offline)
+    try:
+        import wandb
+        if wandb.api.api_key is None:
+            print("\n⚠ Wandb not logged in. Use --wandb_mode offline or run 'wandb login'")
+    except Exception:
+        pass  # Wandb not available or offline mode
+    
     # Run training
     print("\nStarting training pipeline...")
     print("=" * 60)

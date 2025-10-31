@@ -95,8 +95,10 @@ def run_full(config_path: str, device_id: int = 0, wandb_mode: str = "online",
         
         # Stop monitoring
         if monitoring_process:
-            monitoring_process.terminate()
-            monitoring_process.wait()
+            # Check if process is still alive before terminating
+            if monitoring_process.poll() is None:
+                monitoring_process.terminate()
+                monitoring_process.wait()
         
         print("\n" + "=" * 60)
         print("Training completed!")
@@ -104,15 +106,23 @@ def run_full(config_path: str, device_id: int = 0, wandb_mode: str = "online",
         
     except KeyboardInterrupt:
         print("\n\nStopping training and monitoring...")
-        training_process.terminate()
-        if monitoring_process:
-            monitoring_process.terminate()
-        
+        if training_process.poll() is None:
+            training_process.terminate()
         training_process.wait()
-        if monitoring_process:
+        
+        if monitoring_process and monitoring_process.poll() is None:
+            monitoring_process.terminate()
             monitoring_process.wait()
         
         print("Processes stopped.")
+    except Exception as e:
+        print(f"\n\nError during training: {e}")
+        # Cleanup processes
+        if training_process.poll() is None:
+            training_process.terminate()
+        if monitoring_process and monitoring_process.poll() is None:
+            monitoring_process.terminate()
+        print("Processes cleaned up.")
 
 
 if __name__ == "__main__":

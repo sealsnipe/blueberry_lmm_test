@@ -426,6 +426,7 @@ def train(
     pbar = tqdm(total=max_steps, desc="Training")
     pbar.update(step)
     
+    step_start_time = time.time()  # Per-step timer for TPS calculation
     epoch_start_time = time.time()
     
     while step < max_steps:
@@ -483,10 +484,11 @@ def train(
                 else:
                     vram_used = 0.0
                 
-                # Calculate tokens per second
-                elapsed_time = time.time() - epoch_start_time
+                # Calculate tokens per second (per-step timer)
+                elapsed_time = time.time() - step_start_time
                 tokens_processed = x.numel() * gradient_accumulation_steps
                 tokens_per_sec = tokens_processed / elapsed_time if elapsed_time > 0 else 0
+                step_start_time = time.time()  # Reset timer for next step
                 
                 metrics = {
                     'step': step,
@@ -543,8 +545,6 @@ def train(
             
             step += 1
             pbar.update(1)
-            
-            epoch_start_time = time.time()
         
         epoch += 1
         logger.info(f"Completed epoch {epoch}")
