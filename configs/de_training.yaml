@@ -8,7 +8,8 @@ model:
   n_heads: 16
   n_layers: 24
   d_ff: 4096
-  max_seq_len: 1024
+  # Maximum sequence length (reduced for VRAM optimization)
+  max_seq_len: 256
   
   # PLASA Attention (DeepSeek Sparse Attention) settings
   attention:

@@ -323,17 +323,31 @@ def train(
     
     # Create model
     logger.info("Creating model...")
+    
+    # VRAM monitoring: Pre-model
+    if torch.cuda.is_available():
+        free_mem, total_mem = torch.cuda.mem_get_info(device)
+        used_mem = total_mem - free_mem
+        print(f"VRAM Pre-model: {used_mem/1e9:.2f}GB / {total_mem/1e9:.2f}GB")
+    
     model = create_plasa_model(config)
     
     # Enable gradient checkpointing for VRAM optimization
     if hasattr(model, 'gradient_checkpointing_enable'):
         model.gradient_checkpointing_enable()
-        logger.info("Gradient checkpointing enabled")
+        logger.info("Gradient checkpointing enabled (layer-wise)")
     else:
         # Fallback: Manual gradient checkpointing via torch.utils.checkpoint
         logger.info("Using manual gradient checkpointing")
     
     model = model.to(device)
+    
+    # VRAM monitoring: Post-model
+    if torch.cuda.is_available():
+        free_mem, total_mem = torch.cuda.mem_get_info(device)
+        used_mem = total_mem - free_mem
+        print(f"VRAM Post-model: {used_mem/1e9:.2f}GB / {total_mem/1e9:.2f}GB")
+        torch.cuda.empty_cache()
     
     total_params = model.count_parameters()
     logger.info(f"Model created with {total_params:,} parameters ({total_params/1e6:.2f}M)")
@@ -399,11 +413,25 @@ def train(
         target_tokens = config['dataset']['preprocessing'].get('target_tokens', 1000000)
     
     weights = [cfg.weight for cfg in dataset_configs]
-    train_token_iterator = preprocessor.process_multiple_datasets(
-        dataset_configs, 
-        target_tokens=target_tokens,
-        weights=weights
-    )
+    
+    # Try to create streaming iterator, fallback to dummy data if datasets fail
+    try:
+        train_token_iterator = preprocessor.process_multiple_datasets(
+            dataset_configs, 
+            target_tokens=target_tokens,
+            weights=weights
+        )
+        # Test iterator
+        _ = next(iter(train_token_iterator))
+        logger.info("Streaming dataset iterator created successfully")
+    except Exception as e:
+        logger.warning(f"Failed to create streaming dataset iterator: {e}")
+        logger.info("Falling back to dummy dataset for testing")
+        # Create dummy tokens
+        vocab_size = config['model']['vocab_size']
+        num_tokens = target_tokens if target_tokens else 1000000
+        dummy_tokens = torch.randint(0, vocab_size, (num_tokens,)).tolist()
+        train_token_iterator = iter([dummy_tokens[i:i+seq_len*10] for i in range(0, len(dummy_tokens), seq_len*10)])
     
     # Create streaming DataLoader wrapper
     class StreamingDataset(Dataset):
@@ -412,10 +440,39 @@ def train(
             self.seq_len = seq_len
             self.max_samples = max_samples
             self._cache = []
-            self._cache_size = 1000  # Cache some samples for validation
+            self._iterator_exhausted = False
             
         def __len__(self):
             return self.max_samples if self.max_samples else 1000000  # Dummy length
+        
+        def __getitem__(self, idx):
+            # For DataLoader compatibility, we cache samples
+            while len(self._cache) <= idx and not self._iterator_exhausted:
+                try:
+                    chunk = next(self.token_iterator)
+                    if len(chunk) >= self.seq_len:
+                        # Create samples from chunk
+                        for i in range(0, len(chunk) - self.seq_len, self.seq_len):
+                            x = torch.tensor(chunk[i:i+self.seq_len], dtype=torch.long)
+                            y = torch.tensor(chunk[i+1:i+self.seq_len+1], dtype=torch.long)
+                            self._cache.append((x, y))
+                            if self.max_samples and len(self._cache) >= self.max_samples:
+                                return self._cache[-1]
+                except StopIteration:
+                    self._iterator_exhausted = True
+                    break
+                except Exception as e:
+                    logger.warning(f"Error getting chunk from iterator: {e}")
+                    self._iterator_exhausted = True
+                    break
+            
+            if idx < len(self._cache):
+                return self._cache[idx]
+            elif self._cache:
+                # Return last sample if exhausted
+                return self._cache[-1]
+            else:
+                raise IndexError("Dataset exhausted")
         
         def __iter__(self):
             for chunk in self.token_iterator:
@@ -434,12 +491,19 @@ def train(
     train_dataset = StreamingDataset(train_token_iterator, seq_len=seq_len, max_samples=None)
     
     # For validation: use small cached subset
-    val_token_iterator = preprocessor.process_multiple_datasets(
-        dataset_configs, 
-        target_tokens=10000 * seq_len,  # Small validation set
-        weights=weights
-    )
-    val_dataset = StreamingDataset(val_token_iterator, seq_len=seq_len, max_samples=100)
+    try:
+        val_token_iterator = preprocessor.process_multiple_datasets(
+            dataset_configs, 
+            target_tokens=10000 * seq_len,  # Small validation set
+            weights=weights
+        )
+        val_dataset = StreamingDataset(val_token_iterator, seq_len=seq_len, max_samples=100)
+    except Exception as e:
+        logger.warning(f"Failed to create validation iterator: {e}")
+        # Use dummy validation data
+        vocab_size = config['model']['vocab_size']
+        dummy_val_tokens = torch.randint(0, vocab_size, (10000,)).tolist()
+        val_dataset = TokenDataset(dummy_val_tokens, seq_len=seq_len)
     
     # Clear cache after loading
     torch.cuda.empty_cache()
@@ -547,8 +611,23 @@ def train(
             if step % 10 == 0 and torch.cuda.is_available():
                 free_mem, total_mem = torch.cuda.mem_get_info(device)
                 used_mem = total_mem - free_mem
-                print(f"VRAM Post-backward Step {step}: {used_mem/1e9:.2f}GB")
+                vram_gb = used_mem / 1e9
+                vram_peak = max(vram_peak, vram_gb)
+                print(f"VRAM Post-backward Step {step}: {vram_gb:.2f}GB (Peak: {vram_peak:.2f}GB)")
                 torch.cuda.empty_cache()  # Clear cache periodically
+                
+                # Auto-reduce batch size if VRAM > 8GB
+                if vram_peak > 8.0 and config['training']['batch_size'] > 8:
+                    logger.warning(f"VRAM peak {vram_peak:.2f}GB > 8GB! Reducing batch size...")
+                    config['training']['batch_size'] = 8
+                    train_loader = DataLoader(
+                        train_dataset,
+                        batch_size=8,
+                        shuffle=False,
+                        num_workers=0,
+                        pin_memory=False
+                    )
+                    logger.info(f"Batch size reduced to 8")
             
             # Optimizer step
             if (step + 1) % gradient_accumulation_steps == 0:
