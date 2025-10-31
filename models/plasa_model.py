@@ -170,7 +170,7 @@ class PLASATransformerBlock(nn.Module):
         return_index_scores: bool = False
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
-        Forward pass
+        Forward pass with layer-wise gradient checkpointing
         
         Args:
             x: Input tensor [batch_size, seq_len, d_model]
@@ -180,16 +180,42 @@ class PLASATransformerBlock(nn.Module):
             output: Block output
             index_scores: Index scores if requested
         """
-        # Self-attention with PLASA
-        attn_out, index_scores = self.attention(
-            self.norm1(x),
-            return_index_scores=return_index_scores
-        )
-        x = x + attn_out
-        
-        # Feed-forward
-        ff_out = self.ff(self.norm2(x))
-        x = x + ff_out
+        # Layer-wise checkpointing for VRAM optimization
+        if self.training and hasattr(self, '_use_checkpoint') and self._use_checkpoint:
+            import torch.utils.checkpoint as checkpoint
+            
+            # Checkpoint attention
+            def attn_fn(x_norm):
+                attn_out, idx_scores = self.attention(
+                    x_norm,
+                    return_index_scores=return_index_scores
+                )
+                return attn_out, idx_scores
+            
+            attn_out, index_scores = checkpoint.checkpoint(
+                attn_fn, self.norm1(x), use_reentrant=False
+            )
+            x = x + attn_out
+            
+            # Checkpoint feed-forward
+            def ff_fn(x_norm):
+                return self.ff(x_norm)
+            
+            ff_out = checkpoint.checkpoint(
+                ff_fn, self.norm2(x), use_reentrant=False
+            )
+            x = x + ff_out
+        else:
+            # Standard forward pass
+            attn_out, index_scores = self.attention(
+                self.norm1(x),
+                return_index_scores=return_index_scores
+            )
+            x = x + attn_out
+            
+            # Feed-forward
+            ff_out = self.ff(self.norm2(x))
+            x = x + ff_out
         
         return x, index_scores
 
@@ -272,10 +298,15 @@ class PLASALLM(nn.Module):
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing"""
         self.gradient_checkpointing = True
+        # Enable layer-wise checkpointing in blocks
+        for block in self.blocks:
+            block._use_checkpoint = True
     
     def gradient_checkpointing_disable(self):
         """Disable gradient checkpointing"""
         self.gradient_checkpointing = False
+        for block in self.blocks:
+            block._use_checkpoint = False
         
     def _init_weights(self, module):
         """Initialize weights"""

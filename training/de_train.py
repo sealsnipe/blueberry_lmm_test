@@ -359,8 +359,15 @@ def train(
     # Create optimizer
     optimizer = create_optimizer(model, config, use_fp4=use_fp4)
     
-    # Load/prepare data
-    logger.info("Loading data...")
+    # Load/prepare data with streaming
+    logger.info("Loading data with streaming...")
+    
+    # VRAM monitoring: Pre-load
+    if torch.cuda.is_available():
+        free_mem, total_mem = torch.cuda.mem_get_info(device)
+        used_mem = total_mem - free_mem
+        print(f"VRAM Pre-load: {used_mem/1e9:.2f}GB / {total_mem/1e9:.2f}GB")
+    
     dataset_configs = []
     for ds_cfg in config['dataset']['datasets']:
         dataset_configs.append(DatasetConfig(
@@ -373,8 +380,7 @@ def train(
             filters=ds_cfg.get('filters')
         ))
     
-    # For now, use a simple tokenized dataset
-    # In production, this would use the streaming preprocessor
+    # Create streaming preprocessor
     preprocessor = GermanDatasetPreprocessor(
         tokenizer_name="gpt2",
         min_length=config['dataset']['preprocessing']['min_length_tokens'],
@@ -383,35 +389,81 @@ def train(
         language_filter=config['dataset']['preprocessing']['language_filter']
     )
     
-    # Create token dataset (simplified - in production use streaming)
-    # For testing, we'll create a dummy dataset
     seq_len = config['dataset']['preprocessing']['target_length_tokens']
     vocab_size = config['model']['vocab_size']
     
-    # Generate dummy tokens for testing (adjust size if subset_size provided)
+    # Create streaming dataset iterator
     if subset_size_override:
-        num_tokens = subset_size_override * 512  # Rough estimate
+        target_tokens = subset_size_override * seq_len
     else:
-        num_tokens = 1000000
-    dummy_tokens = torch.randint(0, vocab_size, (num_tokens,)).tolist()
+        target_tokens = config['dataset']['preprocessing'].get('target_tokens', 1000000)
     
-    train_dataset = TokenDataset(dummy_tokens, seq_len=seq_len)
-    val_dataset = TokenDataset(dummy_tokens[-100000:], seq_len=seq_len)
+    weights = [cfg.weight for cfg in dataset_configs]
+    train_token_iterator = preprocessor.process_multiple_datasets(
+        dataset_configs, 
+        target_tokens=target_tokens,
+        weights=weights
+    )
+    
+    # Create streaming DataLoader wrapper
+    class StreamingDataset(Dataset):
+        def __init__(self, token_iterator, seq_len, max_samples=None):
+            self.token_iterator = token_iterator
+            self.seq_len = seq_len
+            self.max_samples = max_samples
+            self._cache = []
+            self._cache_size = 1000  # Cache some samples for validation
+            
+        def __len__(self):
+            return self.max_samples if self.max_samples else 1000000  # Dummy length
+        
+        def __iter__(self):
+            for chunk in self.token_iterator:
+                if len(chunk) < self.seq_len:
+                    continue
+                # Create samples from chunk
+                for i in range(0, len(chunk) - self.seq_len, self.seq_len):
+                    x = torch.tensor(chunk[i:i+self.seq_len], dtype=torch.long)
+                    y = torch.tensor(chunk[i+1:i+self.seq_len+1], dtype=torch.long)
+                    self._cache.append((x, y))
+                    yield x, y
+                    if self.max_samples and len(self._cache) >= self.max_samples:
+                        return
+    
+    # For training: use streaming iterator
+    train_dataset = StreamingDataset(train_token_iterator, seq_len=seq_len, max_samples=None)
+    
+    # For validation: use small cached subset
+    val_token_iterator = preprocessor.process_multiple_datasets(
+        dataset_configs, 
+        target_tokens=10000 * seq_len,  # Small validation set
+        weights=weights
+    )
+    val_dataset = StreamingDataset(val_token_iterator, seq_len=seq_len, max_samples=100)
+    
+    # Clear cache after loading
+    torch.cuda.empty_cache()
+    
+    # VRAM monitoring: Post-load
+    if torch.cuda.is_available():
+        free_mem, total_mem = torch.cuda.mem_get_info(device)
+        used_mem = total_mem - free_mem
+        print(f"VRAM Post-load: {used_mem/1e9:.2f}GB / {total_mem/1e9:.2f}GB")
     
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['training']['batch_size'],
-        shuffle=True,
-        num_workers=0,  # VRAM optimization: no multiprocessing
-        pin_memory=False  # VRAM optimization: disable pin memory
+        shuffle=False,  # Streaming data is already shuffled
+        num_workers=0,
+        pin_memory=False
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['training']['batch_size'],
         shuffle=False,
-        num_workers=0,  # VRAM optimization: no multiprocessing
-        pin_memory=False  # VRAM optimization: disable pin memory
+        num_workers=0,
+        pin_memory=False
     )
     
     logger.info(f"Train dataset: {len(train_dataset)} samples")
@@ -470,6 +522,12 @@ def train(
             
             x, y = x.to(device), y.to(device)
             
+            # VRAM monitoring: Pre-forward
+            if step % 10 == 0 and torch.cuda.is_available():
+                free_mem, total_mem = torch.cuda.mem_get_info(device)
+                used_mem = total_mem - free_mem
+                print(f"VRAM Pre-forward Step {step}: {used_mem/1e9:.2f}GB")
+            
             # Forward pass with autocast for VRAM optimization
             if precision == "fp16" and scaler is not None:
                 with autocast('cuda', dtype=torch.float16):
@@ -484,6 +542,13 @@ def train(
                     loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
                     loss = loss / gradient_accumulation_steps
                 loss.backward()
+            
+            # VRAM monitoring: Post-backward
+            if step % 10 == 0 and torch.cuda.is_available():
+                free_mem, total_mem = torch.cuda.mem_get_info(device)
+                used_mem = total_mem - free_mem
+                print(f"VRAM Post-backward Step {step}: {used_mem/1e9:.2f}GB")
+                torch.cuda.empty_cache()  # Clear cache periodically
             
             # Optimizer step
             if (step + 1) % gradient_accumulation_steps == 0:
