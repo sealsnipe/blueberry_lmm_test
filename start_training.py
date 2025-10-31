@@ -86,8 +86,8 @@ def main():
     parser.add_argument(
         "--subset-size",
         type=int,
-        default=100000,
-        help="Preprocessing subset size for testing (default: 100000)"
+        default=None,
+        help="Dataset subset size for testing (default: 100000 for preprocessing)"
     )
     parser.add_argument(
         "--device",
@@ -107,6 +107,12 @@ def main():
         action="store_true",
         help="Skip setup verification"
     )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        help="Number of epochs (overrides config)"
+    )
     
     args = parser.parse_args()
     
@@ -124,7 +130,7 @@ def main():
             sys.executable,
             "-m", "data.preprocess",
             "--config", "configs/de_training.yaml",
-            "--subset_size", str(args.subset_size)
+            "--subset_size", str(args.subset_size or 100000)
         ]
         subprocess.run(cmd)
         print("\n✅ Preprocessing complete!")
@@ -140,13 +146,19 @@ def main():
     print("  python monitoring/live_metrics.py --log_path ./logs/metrics.json")
     print("\n" + "=" * 60)
     
+    # Use direct training script to support epochs and subset-size
     cmd = [
         sys.executable,
-        "run_full.py",
+        "training/de_train.py",
         "--config", "configs/de_training.yaml",
         "--device", str(args.device),
         "--wandb_mode", args.wandb_mode
     ]
+    
+    if args.epochs:
+        cmd.extend(["--epochs", str(args.epochs)])
+    if args.subset_size:
+        cmd.extend(["--subset-size", str(args.subset_size)])
     
     try:
         subprocess.run(cmd, check=True)
@@ -154,7 +166,7 @@ def main():
         print("\n\nTraining interrupted by user.")
         sys.exit(0)
     except subprocess.CalledProcessError as e:
-        print(f"\n❌ Training failed with exit code {e.returncode}")
+        print(f"\nTraining failed with exit code {e.returncode}")
         sys.exit(1)
 
 if __name__ == "__main__":

@@ -44,7 +44,14 @@ def validate_config(config: Dict[str, Any]) -> bool:
     # Validate training config
     assert 'training' in config, "Missing 'training' section in config"
     assert config['training']['batch_size'] > 0, "batch_size must be positive"
-    assert config['training']['learning_rate'] > 0, "learning_rate must be positive"
+    
+    # Convert learning_rate to float if it's a string
+    lr = config['training']['learning_rate']
+    if isinstance(lr, str):
+        lr = float(lr)
+        config['training']['learning_rate'] = lr
+    
+    assert lr > 0, "learning_rate must be positive"
     
     # Validate dataset config
     assert 'dataset' in config, "Missing 'dataset' section in config"

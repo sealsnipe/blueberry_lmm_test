@@ -6,8 +6,14 @@ import argparse
 import json
 import math
 import os
+import sys
 import time
 from pathlib import Path
+
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
 from typing import Dict, List, Optional
 
 import torch
@@ -273,7 +279,9 @@ def train(
     config_path: str,
     device_id: int = 0,
     wandb_mode: str = "online",
-    resume_from: Optional[str] = None
+    resume_from: Optional[str] = None,
+    epochs_override: Optional[int] = None,
+    subset_size_override: Optional[int] = None
 ):
     """
     Main training function
@@ -287,6 +295,15 @@ def train(
     # Load configuration
     config = load_config(config_path)
     validate_config(config)
+    
+    # Override epochs if provided
+    if epochs_override:
+        config['training']['max_epochs'] = epochs_override
+    
+    # Override subset size if provided
+    if subset_size_override:
+        # Adjust dummy dataset size based on subset
+        config['dataset']['preprocessing']['target_tokens'] = subset_size_override * 512
     
     # Setup logging
     logger = setup_logging(log_dir=config['logging']['log_dir'])
@@ -363,8 +380,12 @@ def train(
     seq_len = config['dataset']['preprocessing']['target_length_tokens']
     vocab_size = config['model']['vocab_size']
     
-    # Generate dummy tokens for testing
-    dummy_tokens = torch.randint(0, vocab_size, (1000000,)).tolist()
+    # Generate dummy tokens for testing (adjust size if subset_size provided)
+    if subset_size_override:
+        num_tokens = subset_size_override * 512  # Rough estimate
+    else:
+        num_tokens = 1000000
+    dummy_tokens = torch.randint(0, vocab_size, (num_tokens,)).tolist()
     
     train_dataset = TokenDataset(dummy_tokens, seq_len=seq_len)
     val_dataset = TokenDataset(dummy_tokens[-100000:], seq_len=seq_len)
@@ -581,6 +602,10 @@ if __name__ == "__main__":
                        help="Wandb mode")
     parser.add_argument("--resume_from", type=str, default=None,
                        help="Path to checkpoint to resume from")
+    parser.add_argument("--epochs", type=int, default=None,
+                       help="Number of epochs (overrides config)")
+    parser.add_argument("--subset-size", type=int, default=None,
+                       help="Dataset subset size for testing")
     
     args = parser.parse_args()
     
@@ -588,6 +613,8 @@ if __name__ == "__main__":
         config_path=args.config,
         device_id=args.device,
         wandb_mode=args.wandb_mode,
-        resume_from=args.resume_from
+        resume_from=args.resume_from,
+        epochs_override=args.epochs,
+        subset_size_override=args.subset_size
     )
 
