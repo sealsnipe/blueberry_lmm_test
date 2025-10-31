@@ -338,8 +338,9 @@ class PLASALLM(nn.Module):
         # Token embeddings
         x = self.embed(x)  # [batch_size, seq_len, d_model]
         
-        # Positional embeddings
+        # Positional embeddings - clamp positions to valid range
         positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
+        positions = torch.clamp(positions, 0, self.pos_embed.weight.size(0) - 1)
         x = x + self.pos_embed(positions)
         
         # Pass through transformer blocks (with gradient checkpointing if enabled)
