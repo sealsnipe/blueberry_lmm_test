@@ -49,6 +49,23 @@ A complete training pipeline for a German language model (~450M parameters) base
 
 ```
 
+## Quick Start
+
+**One-command start (recommended):**
+```bash
+python start_training.py --device 0
+```
+
+**Full setup (first time):**
+```bash
+git clone https://github.com/sealsnipe/blueberry_lmm_test.git
+cd blueberry_lmm_test
+pip install -r requirements.txt
+python start_training.py --device 0 --wandb-mode online
+```
+
+For detailed setup instructions, see `GETTING_STARTED.md` or `PRODUCTION_LAUNCH.md`.
+
 ## Installation
 
 ### Prerequisites
@@ -439,9 +456,13 @@ For issues and questions:
 
 ## Additional Resources
 
+- `GETTING_STARTED.md`: Quick start guide (start here!)
+- `PRODUCTION_LAUNCH.md`: Complete production guide
 - `QUICK_REFERENCE.md`: Quick command reference and troubleshooting
-- `VALIDATION_STATUS.md`: Test results and validation summary
+- `VERIFICATION_REPORT.md`: Test results and validation summary
 - `PACKAGE_SUMMARY.md`: Complete package overview and quick reference
+- `BUGFIXES.md`: Bugfix details and fixes applied
+- `start_training.py`: One-command quick start script
 - `resume_training.py`: Helper script for resuming training
 - `quick_start.py`: Quick start script with dependency checks
 
