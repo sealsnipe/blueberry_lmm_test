@@ -1,0 +1,152 @@
+# German Language Model Training Configuration
+# Model: 450M parameters with PLASA attention
+
+# Model Architecture
+model:
+  vocab_size: 50257  # GPT-2 tokenizer vocab size
+  d_model: 1024
+  n_heads: 16
+  n_layers: 24
+  d_ff: 4096
+  max_seq_len: 1024
+  
+  # PLASA Attention (DeepSeek Sparse Attention) settings
+  attention:
+    type: "plasa"  # PLASA/DeepSeek Sparse Attention
+    indexer_heads: 4
+    indexer_dim: 64
+    sparse_top_k: 512  # Top-k tokens for sparse attention
+    
+  # MoE settings (optional, can be disabled)
+  moe:
+    enabled: false
+    num_experts: 4
+    expert_top_k: 2
+  
+  dropout: 0.1
+  load_balancing_weight: 0.01
+
+# Dataset Configuration
+dataset:
+  # German datasets mix (streaming mode)
+  datasets:
+    - name: "commoncrawl"
+      path: "commoncrawl/de"
+      weight: 0.60
+      streaming: true
+    - name: "oscar"
+      path: "oscar/de"
+      weight: 0.20
+      streaming: true
+    - name: "fineweb"
+      path: "HuggingFaceFW/fineweb"
+      subset: "CC-MAIN-2024-10"
+      weight: 0.10
+      streaming: true
+      filters: ["de"]
+    - name: "wikipedia"
+      path: "wikipedia"
+      config: "20220301.de"
+      weight: 0.05
+      streaming: true
+    - name: "alpaca"
+      path: "lorentzben/alpaca_german"
+      weight: 0.05
+      streaming: true
+  
+  # Preprocessing
+  preprocessing:
+    min_length_tokens: 256
+    max_length_tokens: 1024
+    target_length_tokens: 512
+    language_filter: "de"
+    deduplication: true
+    
+  # Data splitting
+  train_split: 0.95
+  val_split: 0.05
+  
+  # Target dataset size (for testing, start with 1B tokens)
+  target_tokens: 1000000000  # 1B tokens for testing
+  
+# Training Configuration
+training:
+  # Batch settings
+  batch_size: 32
+  gradient_accumulation_steps: 4
+  effective_batch_size: 128  # batch_size * gradient_accumulation_steps
+  
+  # Learning rate
+  learning_rate: 5e-4
+  lr_scheduler: "cosine"
+  warmup_steps: 500
+  min_lr: 1e-6
+  
+  # Optimization
+  optimizer: "adamw"
+  weight_decay: 0.1
+  betas: [0.9, 0.95]
+  grad_clip: 1.0
+  
+  # Precision
+  precision: "fp16"  # Options: fp32, fp16, fp4
+  fp4_enabled: false  # Set to true for FP4 quantization
+  
+  # Training duration
+  max_epochs: 3
+  max_steps: null  # If set, overrides max_epochs
+  eval_every: 500  # Evaluation every N steps
+  save_every: 100  # Checkpoint every N steps
+  
+  # Mixed precision
+  use_amp: true
+  
+  # Early stopping
+  early_stopping:
+    enabled: false
+    patience: 5
+    min_delta: 0.001
+
+# Logging and Monitoring
+logging:
+  # Wandb settings
+  wandb:
+    enabled: true
+    project: "blueberry-de-train"
+    entity: null  # Set your wandb entity
+    mode: "online"  # Options: online, offline, disabled
+    log_freq: 10  # Log every N steps
+    
+  # Local logging
+  log_dir: "./logs"
+  metrics_file: "./logs/metrics.json"
+  save_plots: true
+  plot_dir: "./logs/plots"
+  
+  # Metrics to track
+  metrics:
+    - loss
+    - perplexity
+    - learning_rate
+    - vram_usage
+    - tokens_per_second
+    - gradient_norm
+
+# Checkpointing
+checkpoint:
+  dir: "./checkpoints"
+  save_best: true
+  save_last: true
+  resume_from: null  # Path to checkpoint to resume from
+
+# Hardware
+hardware:
+  device: "cuda:0"
+  num_workers: 4
+  pin_memory: true
+
+# Paths
+paths:
+  data_cache: "./data/cache"
+  processed_data: "./data/processed"
+
