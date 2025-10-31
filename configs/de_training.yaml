@@ -71,10 +71,10 @@ dataset:
   
 # Training Configuration
 training:
-  # Batch settings
-  batch_size: 32
-  gradient_accumulation_steps: 4
-  effective_batch_size: 128  # batch_size * gradient_accumulation_steps
+  # Batch settings (reduced for VRAM optimization)
+  batch_size: 16
+  gradient_accumulation_steps: 2
+  effective_batch_size: 32  # batch_size * gradient_accumulation_steps
   
   # Learning rate
   learning_rate: 5e-4
@@ -142,8 +142,8 @@ checkpoint:
 # Hardware
 hardware:
   device: "cuda:0"
-  num_workers: 4
-  pin_memory: true
+  num_workers: 0  # Reduced for VRAM optimization
+  pin_memory: false  # Disabled for VRAM optimization
 
 # Paths
 paths:

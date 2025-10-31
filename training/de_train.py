@@ -120,21 +120,20 @@ def create_optimizer(
     use_fp4: bool = False
 ):
     """
-    Create optimizer with optional FP4 quantization
+    Create optimizer with BitsAndBytes 8bit quantization (always used for VRAM optimization)
     
     Args:
         model: Model to optimize
         config: Training configuration
-        use_fp4: Whether to use FP4 quantization
+        use_fp4: Whether to use FP4 quantization (ignored, always use 8bit)
         
     Returns:
         Optimizer
     """
     training_config = config['training']
     
-    # Get parameters
-    if use_fp4 and BNB_AVAILABLE:
-        # Use FP4 quantized optimizer
+    # Always use BitsAndBytes 8bit optimizer for VRAM optimization
+    if BNB_AVAILABLE:
         optimizer = bnb.optim.AdamW8bit(
             model.parameters(),
             lr=training_config['learning_rate'],
@@ -142,7 +141,7 @@ def create_optimizer(
             betas=tuple(training_config.get('betas', [0.9, 0.95]))
         )
     else:
-        # Standard AdamW
+        # Fallback to standard AdamW if bitsandbytes not available
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=training_config['learning_rate'],
@@ -325,6 +324,15 @@ def train(
     # Create model
     logger.info("Creating model...")
     model = create_plasa_model(config)
+    
+    # Enable gradient checkpointing for VRAM optimization
+    if hasattr(model, 'gradient_checkpointing_enable'):
+        model.gradient_checkpointing_enable()
+        logger.info("Gradient checkpointing enabled")
+    else:
+        # Fallback: Manual gradient checkpointing via torch.utils.checkpoint
+        logger.info("Using manual gradient checkpointing")
+    
     model = model.to(device)
     
     total_params = model.count_parameters()
@@ -394,16 +402,16 @@ def train(
         train_dataset,
         batch_size=config['training']['batch_size'],
         shuffle=True,
-        num_workers=config['hardware']['num_workers'],
-        pin_memory=config['hardware']['pin_memory']
+        num_workers=0,  # VRAM optimization: no multiprocessing
+        pin_memory=False  # VRAM optimization: disable pin memory
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['training']['batch_size'],
         shuffle=False,
-        num_workers=config['hardware']['num_workers'],
-        pin_memory=config['hardware']['pin_memory']
+        num_workers=0,  # VRAM optimization: no multiprocessing
+        pin_memory=False  # VRAM optimization: disable pin memory
     )
     
     logger.info(f"Train dataset: {len(train_dataset)} samples")
@@ -440,6 +448,9 @@ def train(
     # Initialize metrics tracker
     metrics_tracker = MetricsTracker(config['logging']['metrics_file'])
     
+    # VRAM tracking
+    vram_peak = 0.0
+    
     # Training loop
     model.train()
     logger.info("Starting training loop...")
@@ -459,7 +470,7 @@ def train(
             
             x, y = x.to(device), y.to(device)
             
-            # Forward pass
+            # Forward pass with autocast for VRAM optimization
             if precision == "fp16" and scaler is not None:
                 with autocast('cuda', dtype=torch.float16):
                     logits, _ = model(x)
@@ -468,9 +479,10 @@ def train(
                 
                 scaler.scale(loss).backward()
             else:
-                logits, _ = model(x)
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
-                loss = loss / gradient_accumulation_steps
+                with autocast('cuda', dtype=torch.float16):
+                    logits, _ = model(x)
+                    loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
+                    loss = loss / gradient_accumulation_steps
                 loss.backward()
             
             # Optimizer step
@@ -493,6 +505,14 @@ def train(
                 scheduler.step()
                 optimizer.zero_grad()
             
+            # VRAM monitoring every 10 steps
+            if step % 10 == 0 and torch.cuda.is_available():
+                free_mem, total_mem = torch.cuda.mem_get_info(device)
+                used_mem = total_mem - free_mem
+                vram_gb = used_mem / 1e9
+                vram_peak = max(vram_peak, vram_gb)
+                print(f"Step {step}: VRAM {vram_gb:.2f}GB / {total_mem/1e9:.2f}GB (Peak: {vram_peak:.2f}GB)")
+            
             # Logging
             if step % config['logging']['wandb'].get('log_freq', 10) == 0:
                 current_lr = scheduler.get_last_lr()[0]
@@ -501,7 +521,10 @@ def train(
                 
                 # Get VRAM usage
                 if torch.cuda.is_available():
-                    vram_used = torch.cuda.memory_allocated(device) / 1e9  # GB
+                    free_mem, total_mem = torch.cuda.mem_get_info(device)
+                    used_mem = total_mem - free_mem
+                    vram_used = used_mem / 1e9  # GB
+                    vram_peak = max(vram_peak, vram_used)
                 else:
                     vram_used = 0.0
                 

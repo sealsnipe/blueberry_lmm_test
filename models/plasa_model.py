@@ -266,6 +266,17 @@ class PLASALLM(nn.Module):
         # Initialize weights
         self.apply(self._init_weights)
         
+        # Enable gradient checkpointing support
+        self.gradient_checkpointing = False
+        
+    def gradient_checkpointing_enable(self):
+        """Enable gradient checkpointing"""
+        self.gradient_checkpointing = True
+    
+    def gradient_checkpointing_disable(self):
+        """Disable gradient checkpointing"""
+        self.gradient_checkpointing = False
+        
     def _init_weights(self, module):
         """Initialize weights"""
         if isinstance(module, nn.Linear):
@@ -300,13 +311,27 @@ class PLASALLM(nn.Module):
         positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
         x = x + self.pos_embed(positions)
         
-        # Pass through transformer blocks
+        # Pass through transformer blocks (with gradient checkpointing if enabled)
         index_scores_list = [] if return_index_scores else None
         
-        for block in self.blocks:
-            x, index_scores = block(x, return_index_scores=return_index_scores)
-            if return_index_scores and index_scores is not None:
-                index_scores_list.append(index_scores)
+        if self.gradient_checkpointing and self.training:
+            # Use gradient checkpointing for VRAM optimization
+            import torch.utils.checkpoint as checkpoint
+            for block in self.blocks:
+                if return_index_scores:
+                    x, index_scores = checkpoint.checkpoint(
+                        block, x, return_index_scores, use_reentrant=False
+                    )
+                    index_scores_list.append(index_scores)
+                else:
+                    x, _ = checkpoint.checkpoint(
+                        block, x, False, use_reentrant=False
+                    )
+        else:
+            for block in self.blocks:
+                x, index_scores = block(x, return_index_scores=return_index_scores)
+                if return_index_scores and index_scores is not None:
+                    index_scores_list.append(index_scores)
         
         # Final normalization and projection
         x = self.norm(x)
